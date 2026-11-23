@@ -178,8 +178,14 @@ final class BreakCoordinator: ObservableObject {
         let timer = Timer(timeInterval: gentleModeWaitSeconds, repeats: false) { [weak self] timer in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                guard self.autoBreakTimer === timer, TimerManager.shared.remainingWorkTime == 0 else { return }
+                guard self.autoBreakTimer === timer else { return }
                 self.autoBreakTimer = nil
+                guard TimerManager.shared.remainingWorkTime == 0 else {
+                    self.breakTriggered = false
+                    self.waitingCombinedCycle = nil
+                    self.combinedStandOverlay = false
+                    return
+                }
                 let meetingStarted = self.combinedStandOverlay && MediaDeviceMonitor.shared.meetingAtStandDeadline()
                 guard self.canStartBreakNow, !meetingStarted else {
                     self.breakTriggered = false
