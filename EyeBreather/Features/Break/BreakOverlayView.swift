@@ -3,6 +3,7 @@ import AppKit
 
 /// 休息遮罩视图
 struct BreakOverlayView: View {
+    @ObservedObject private var coordinator = BreakCoordinator.shared
     @ObservedObject private var timerManager = TimerManager.shared
     @ObservedObject private var settingsManager = SettingsManager.shared
     @ObservedObject private var wallpaperManager = WallpaperManager.shared
@@ -37,6 +38,13 @@ struct BreakOverlayView: View {
                         .multilineTextAlignment(.center)
                         .shadow(color: textShadowColor, radius: textShadowRadius, x: 0, y: 1)
                     
+                    if coordinator.combinedStandOverlay {
+                        HStack(spacing: 16) {
+                            BreakActionButton(title: "已起身", style: buttonStyle) { coordinator.confirmStanding() }
+                            BreakActionButton(title: "10 分钟后提醒", style: buttonStyle) { coordinator.snoozeStanding() }
+                        }
+                    }
+
                     // 进度条
                     ProgressView(value: timerManager.breakProgress)
                         .progressViewStyle(.linear)
@@ -165,6 +173,7 @@ struct BreakOverlayView: View {
     // MARK: - Tips Content
     
     private var tipsText: String {
+        if coordinator.combinedStandOverlay { return StandNotification.combinedMessage }
         if settingsManager.settings.breakStyle == .tips {
             return settingsManager.settings.customTipsText
         }

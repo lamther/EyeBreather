@@ -38,7 +38,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     
     private func setupNotificationDelegate() {
-        UNUserNotificationCenter.current().delegate = self
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        center.setNotificationCategories(StandNotification.categories())
     }
     
     // MARK: - UNUserNotificationCenterDelegate
@@ -59,20 +61,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     ) {
         Task { @MainActor in
             handleNotificationResponse(response)
+            completionHandler()
         }
-        completionHandler()
     }
     
     @MainActor
     private func handleNotificationResponse(_ response: UNNotificationResponse) {
         handleNotificationAction(
             actionIdentifier: response.actionIdentifier,
-            categoryIdentifier: response.notification.request.content.categoryIdentifier
+            categoryIdentifier: response.notification.request.content.categoryIdentifier,
+            standCycle: response.notification.request.content.userInfo[StandNotification.cycleKey] as? String
         )
     }
 
     @MainActor
-    func handleNotificationAction(actionIdentifier: String, categoryIdentifier: String) {
+    func handleNotificationAction(actionIdentifier: String, categoryIdentifier: String, standCycle: String? = nil) {
+        if categoryIdentifier == StandNotification.stand || categoryIdentifier == StandNotification.combined {
+            if actionIdentifier == StandNotification.confirm || actionIdentifier == StandNotification.snooze {
+                BreakCoordinator.shared.handleStandAction(actionIdentifier, cycle: standCycle)
+                return
+            }
+        }
         switch actionIdentifier {
         case "START_BREAK":
             BreakCoordinator.shared.startBreak()
@@ -85,7 +94,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             
         case UNNotificationDefaultActionIdentifier:
             // 用户点击通知本身（而非按钮）
-            if categoryIdentifier == "BREAK_REMINDER" {
+            if categoryIdentifier == StandNotification.eyes || categoryIdentifier == StandNotification.combined {
                 BreakCoordinator.shared.startBreak()
             }
             

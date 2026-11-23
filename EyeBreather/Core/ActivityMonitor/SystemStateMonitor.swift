@@ -199,6 +199,10 @@ final class SystemStateMonitor: ObservableObject {
         let sleepDuration = calculateSleepDuration()
         let idleThreshold = SettingsManager.shared.settings.idleResetThreshold * 60
 
+        if sleepDuration >= idleThreshold {
+            TimerManager.shared.resetStandCycle()
+        }
+
         if sleepDuration >= idleThreshold, didPauseTimerForSuspension {
             TimerManager.shared.resetWorkCycle()
             didPauseTimerForSuspension = false
@@ -235,6 +239,10 @@ extension SystemStateMonitor {
 
     func debugSimulateSystemDidWake() {
         handleSystemDidWake()
+    }
+
+    func debugSetSuspensionDuration(_ seconds: TimeInterval) {
+        lastSleepTime = Date().addingTimeInterval(-seconds)
     }
 
     func debugResetState() {

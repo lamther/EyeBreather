@@ -7,6 +7,7 @@ import AppKit
 final class SoundManager {
     static let shared = SoundManager()
     
+    private lazy var standSpeech = AVSpeechSynthesizer()
     private var audioPlayer: AVAudioPlayer?
     
     /// 可用的提示音列表
@@ -36,6 +37,17 @@ final class SoundManager {
         playSystemSound(soundId)
     }
     
+    func speakStandReminder(_ text: String) {
+        guard SettingsManager.shared.settings.standVoiceEnabled else { return }
+        let utterance = AVSpeechUtterance(string: text)
+        utterance.voice = AVSpeechSynthesisVoice(language: "zh-CN")
+        standSpeech.speak(utterance)
+    }
+
+    func stopStandVoice() {
+        if standSpeech.isSpeaking { standSpeech.stopSpeaking(at: .immediate) }
+    }
+
     private func playSystemSound(_ soundId: String) {
         // 使用系统声音
         let soundName: String

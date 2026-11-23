@@ -21,6 +21,17 @@ struct AppSettings: Codable, Equatable {
     
     /// 渐进模式：连续跳过多少次后强制休息
     var progressiveForceThreshold: Int = 3
+
+    // MARK: - 起身提醒
+
+    /// 独立的起身提醒，默认关闭
+    var standReminderEnabled: Bool = false
+
+    /// 累计工作多少分钟后提醒起身
+    var standIntervalMinutes: Int = 50
+
+    /// 起身提醒使用中文语音，与护眼提示音独立
+    var standVoiceEnabled: Bool = true
     
     // MARK: - 智能检测
     
@@ -88,6 +99,53 @@ struct AppSettings: Codable, Equatable {
     // MARK: - 默认值
     
     static let `default` = AppSettings()
+}
+
+// MARK: - 兼容已有设置
+
+extension AppSettings {
+    private enum CodingKeys: String, CodingKey {
+        case workDuration, breakDuration, reminderMode, preBreakWarning, delayOptions
+        case progressiveForceThreshold
+        case standReminderEnabled, standIntervalMinutes, standVoiceEnabled
+        case enableActivityDetection, idleResetThreshold, enableMeetingDetection
+        case focusApps, enableSmartRecommend, breakStyle, customBackgroundPath, customTipsText
+        case enableSound, breakStartSound, breakEndSound
+        case enableDoNotDisturb, doNotDisturbStart, doNotDisturbEnd
+        case launchAtLogin, showInDock, appearance
+    }
+
+    /// 新增字段只补默认值，保留用户已有的护眼、外观和暂停设置。
+    init(from decoder: Decoder) throws {
+        self.init()
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        workDuration = try values.decodeIfPresent(Int.self, forKey: .workDuration) ?? workDuration
+        breakDuration = try values.decodeIfPresent(Int.self, forKey: .breakDuration) ?? breakDuration
+        reminderMode = try values.decodeIfPresent(ReminderMode.self, forKey: .reminderMode) ?? reminderMode
+        preBreakWarning = try values.decodeIfPresent(Int.self, forKey: .preBreakWarning) ?? preBreakWarning
+        delayOptions = try values.decodeIfPresent([Int].self, forKey: .delayOptions) ?? delayOptions
+        progressiveForceThreshold = try values.decodeIfPresent(Int.self, forKey: .progressiveForceThreshold) ?? progressiveForceThreshold
+        standReminderEnabled = try values.decodeIfPresent(Bool.self, forKey: .standReminderEnabled) ?? standReminderEnabled
+        standIntervalMinutes = try values.decodeIfPresent(Int.self, forKey: .standIntervalMinutes) ?? standIntervalMinutes
+        standVoiceEnabled = try values.decodeIfPresent(Bool.self, forKey: .standVoiceEnabled) ?? standVoiceEnabled
+        enableActivityDetection = try values.decodeIfPresent(Bool.self, forKey: .enableActivityDetection) ?? enableActivityDetection
+        idleResetThreshold = try values.decodeIfPresent(Int.self, forKey: .idleResetThreshold) ?? idleResetThreshold
+        enableMeetingDetection = try values.decodeIfPresent(Bool.self, forKey: .enableMeetingDetection) ?? enableMeetingDetection
+        focusApps = try values.decodeIfPresent([FocusApp].self, forKey: .focusApps) ?? focusApps
+        enableSmartRecommend = try values.decodeIfPresent(Bool.self, forKey: .enableSmartRecommend) ?? enableSmartRecommend
+        breakStyle = try values.decodeIfPresent(BreakStyle.self, forKey: .breakStyle) ?? breakStyle
+        customBackgroundPath = try values.decodeIfPresent(String.self, forKey: .customBackgroundPath)
+        customTipsText = try values.decodeIfPresent(String.self, forKey: .customTipsText) ?? customTipsText
+        enableSound = try values.decodeIfPresent(Bool.self, forKey: .enableSound) ?? enableSound
+        breakStartSound = try values.decodeIfPresent(String.self, forKey: .breakStartSound) ?? breakStartSound
+        breakEndSound = try values.decodeIfPresent(String.self, forKey: .breakEndSound) ?? breakEndSound
+        enableDoNotDisturb = try values.decodeIfPresent(Bool.self, forKey: .enableDoNotDisturb) ?? enableDoNotDisturb
+        doNotDisturbStart = try values.decodeIfPresent(Int.self, forKey: .doNotDisturbStart) ?? doNotDisturbStart
+        doNotDisturbEnd = try values.decodeIfPresent(Int.self, forKey: .doNotDisturbEnd) ?? doNotDisturbEnd
+        launchAtLogin = try values.decodeIfPresent(Bool.self, forKey: .launchAtLogin) ?? launchAtLogin
+        showInDock = try values.decodeIfPresent(Bool.self, forKey: .showInDock) ?? showInDock
+        appearance = try values.decodeIfPresent(AppearanceMode.self, forKey: .appearance) ?? appearance
+    }
 }
 
 // MARK: - UserDefaults 存储
