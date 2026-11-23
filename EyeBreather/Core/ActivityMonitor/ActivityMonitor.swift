@@ -170,8 +170,13 @@ final class ActivityMonitor: ObservableObject {
     }
     
     private func checkIdleStatus() {
+        guard isMonitoring else { return }
+        let now = Date()
+        if let lastInput = TimerManager.shared.sampleSystemActivity(), lastInput > lastActivityTime {
+            lastActivityTime = lastInput
+        }
         let idleThreshold = SettingsManager.shared.settings.idleResetThreshold * 60
-        let idleTime = Int(Date().timeIntervalSince(lastActivityTime))
+        let idleTime = Int(now.timeIntervalSince(lastActivityTime))
         
         let wasIdle = isIdle
         isIdle = idleTime >= idleThreshold
@@ -182,6 +187,8 @@ final class ActivityMonitor: ObservableObject {
             
             // 通知 TimerManager 检查是否需要重置
             TimerManager.shared.checkIdleReset()
+        } else if wasIdle && !isIdle {
+            NotificationCenter.default.post(name: .userBecameActive, object: nil)
         }
     }
     

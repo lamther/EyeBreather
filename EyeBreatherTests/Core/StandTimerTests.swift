@@ -7,6 +7,7 @@ final class StandTimerTests: XCTestCase {
     private let notifications = NotificationCenter()
     private var originalSettings: AppSettings!
     private var clock = Date()
+    private var hidIdleSeconds: TimeInterval?
 
     override func setUp() {
         super.setUp()
@@ -22,8 +23,13 @@ final class StandTimerTests: XCTestCase {
         SettingsManager.shared.settings = settings
 
         clock = Date()
+        hidIdleSeconds = nil
         timer.debugResetForTests()
-        timer.debugUseClock({ [unowned self] in clock }, events: notifications)
+        timer.debugUseClock(
+            { [unowned self] in clock },
+            events: notifications,
+            hidIdleSeconds: { [unowned self] in hidIdleSeconds }
+        )
         timer.start()
     }
 
@@ -95,17 +101,16 @@ final class StandTimerTests: XCTestCase {
         SettingsManager.shared.settings.enableActivityDetection = true
         SettingsManager.shared.settings.idleResetThreshold = 5
 
+        hidIdleSeconds = 3 * 60
         tick(after: 3 * 60)
         XCTAssertEqual(timer.elapsedStandWorkSeconds, 3 * 60)
         system.debugSimulateScreenLock()
         clock += 3 * 60
+        hidIdleSeconds = 0
         system.debugSetSuspensionDuration(3 * 60)
         system.debugSimulateScreenUnlock()
 
         XCTAssertEqual(timer.elapsedStandWorkSeconds, 0)
-        tick(after: 5)
-        XCTAssertEqual(timer.elapsedStandWorkSeconds, 0)
-        timer.recordActivity()
         tick(after: 5)
         XCTAssertEqual(timer.elapsedStandWorkSeconds, 5)
     }
@@ -166,6 +171,58 @@ final class StandTimerTests: XCTestCase {
         timer.recordActivity()
         tick(after: 5)
         XCTAssertEqual(timer.elapsedStandWorkSeconds, 5)
+    }
+
+    func testHIDActivityCountsTypingWithoutGlobalKeyCallbacks() {
+        SettingsManager.shared.settings.enableActivityDetection = true
+        SettingsManager.shared.settings.idleResetThreshold = 5
+        let events = StandTimerEventRecorder(center: notifications)
+
+        hidIdleSeconds = 0.5
+        for _ in 0..<120 {
+            tick(after: 5)
+        }
+
+        XCTAssertEqual(timer.elapsedStandWorkSeconds, 600)
+        XCTAssertTrue(timer.isStandDue)
+        XCTAssertEqual(events.names, [.standTimeReached])
+    }
+
+    func testHIDActivityResetsAtIdleThresholdAndRestartsAfterTyping() {
+        SettingsManager.shared.settings.enableActivityDetection = true
+        SettingsManager.shared.settings.idleResetThreshold = 5
+
+        hidIdleSeconds = 0
+        tick(after: 60)
+        hidIdleSeconds = 299
+        tick(after: 299)
+        XCTAssertEqual(timer.elapsedStandWorkSeconds, 359)
+
+        hidIdleSeconds = 300
+        tick(after: 1)
+        XCTAssertEqual(timer.elapsedStandWorkSeconds, 0)
+        hidIdleSeconds = 0
+        tick(after: 15)
+        XCTAssertEqual(timer.elapsedStandWorkSeconds, 0)
+        hidIdleSeconds = 2
+        tick(after: 2)
+        XCTAssertEqual(timer.elapsedStandWorkSeconds, 2)
+    }
+
+    func testFirstHIDInputBetweenSamplesResetsCompletedIdleGap() {
+        SettingsManager.shared.settings.enableActivityDetection = true
+        SettingsManager.shared.settings.idleResetThreshold = 5
+
+        hidIdleSeconds = 0
+        tick(after: 60)
+        hidIdleSeconds = 299
+        tick(after: 299)
+        XCTAssertEqual(timer.elapsedStandWorkSeconds, 359)
+
+        hidIdleSeconds = 2
+        tick(after: 5)
+        XCTAssertEqual(timer.elapsedStandWorkSeconds, 2)
+        XCTAssertEqual(timer.remainingStandSeconds, 598)
     }
 
     func testDisablingAndImmediatelyEnablingStartsFreshAtSettingChange() {

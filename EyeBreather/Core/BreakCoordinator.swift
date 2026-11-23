@@ -234,6 +234,25 @@ final class BreakCoordinator: ObservableObject {
         }
     }
     
+    func resumeAfterSystemSuspension() {
+        if AppDetector.shared.shouldPauseReminder || (SettingsManager.shared.settings.standReminderEnabled
+            && MediaDeviceMonitor.shared.meetingAtStandDeadline()) {
+            didPauseForReminder = true
+            return
+        }
+        TimerManager.shared.resume()
+        restoreBreakPresentation()
+    }
+
+    private func restoreBreakPresentation() {
+        let timer = TimerManager.shared
+        if timer.state == .breaking {
+            BreakWindowController.shared.showOverlay()
+        } else if timer.remainingWorkTime == 0 {
+            handleBreakTimeReached()
+        }
+    }
+
     private func handleShouldResume() {
         guard !SystemStateMonitor.shared.isSuspended else { return }
         guard !AppDetector.shared.shouldPauseReminder else { return }
@@ -244,11 +263,7 @@ final class BreakCoordinator: ObservableObject {
             TimerManager.shared.resume()
             didPauseForReminder = false
 
-            if TimerManager.shared.state == .breaking {
-                BreakWindowController.shared.showOverlay()
-            } else if TimerManager.shared.state == .preBreak || TimerManager.shared.remainingWorkTime == 0 {
-                NotificationCenter.default.post(name: .breakTimeReached, object: nil)
-            }
+            restoreBreakPresentation()
         } else {
             didPauseForReminder = false
         }
@@ -314,7 +329,11 @@ final class BreakCoordinator: ObservableObject {
         let content = UNMutableNotificationContent()
         content.title = StandNotification.message
         content.body = "距离上次起身，已累计工作 \(timer.elapsedStandWorkSeconds / 60) 分钟。"
-        if includesEyeWarning { content.body += "护眼休息将在 \(timer.remainingWorkTime) 秒后开始。" }
+        if includesEyeWarning {
+            content.body += "护眼休息将在 \(timer.remainingWorkTime) 秒后开始。"
+            let settings = SettingsManager.shared.settings
+            if !settings.standVoiceEnabled && settings.enableSound { content.sound = .default }
+        }
         content.categoryIdentifier = StandNotification.stand
         if let standCycle { content.userInfo = [StandNotification.cycleKey: standCycle] }
         submitStandNotification(content)
@@ -336,12 +355,20 @@ final class BreakCoordinator: ObservableObject {
 
     private func submitStandNotification(_ content: UNNotificationContent) {
         let request = UNNotificationRequest(identifier: "stand-reminder", content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(request) { [logger] error in
-            if let error { logger.error("Standing notification submission failed: \(error.localizedDescription, privacy: .public)") }
+        let submittedCycle = content.userInfo[StandNotification.cycleKey] as? String
+        UNUserNotificationCenter.current().add(request) { [weak self, logger] error in
+            guard let error else { return }
+            logger.error("Standing notification submission failed: \(error.localizedDescription, privacy: .public)")
+            Task { @MainActor in
+                guard let self, let submittedCycle, self.waitingCombinedCycle == submittedCycle else { return }
+                self.waitingCombinedCycle = nil
+            }
         }
     }
 
     private func clearStandPresentation() {
+        let shouldKeepEyeActions = standCycle != nil && standCycle == waitingCombinedCycle && breakTriggered
+            && TimerManager.shared.remainingWorkTime == 0 && canStartBreakNow
         let hadStandPresentation = standCycle != nil
         standCycle = nil
         combinedStandOverlay = false
@@ -349,6 +376,10 @@ final class BreakCoordinator: ObservableObject {
         let center = UNUserNotificationCenter.current()
         center.removePendingNotificationRequests(withIdentifiers: ["stand-reminder"])
         center.removeDeliveredNotifications(withIdentifiers: ["stand-reminder"])
+        if shouldKeepEyeActions {
+            waitingCombinedCycle = nil
+            sendBreakNotification(includingStand: false, silently: true)
+        }
     }
 
     func confirmStanding() {
@@ -395,7 +426,7 @@ final class BreakCoordinator: ObservableObject {
         UNUserNotificationCenter.current().add(request)
     }
     
-    private func sendBreakNotification(includingStand: Bool) {
+    private func sendBreakNotification(includingStand: Bool, silently: Bool = false) {
         let content = UNMutableNotificationContent()
         content.title = includingStand ? StandNotification.combinedMessage : "休息时间到"
         content.body = includingStand ? "起身活动两分钟，让眼睛也休息一下。" : "是时候让眼睛休息一下了"
@@ -408,7 +439,7 @@ final class BreakCoordinator: ObservableObject {
             content.userInfo = [StandNotification.cycleKey: standCycle]
             submitStandNotification(content)
             return
-        } else {
+        } else if !silently {
             content.sound = .default
         }
 

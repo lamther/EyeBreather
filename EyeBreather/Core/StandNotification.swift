@@ -26,6 +26,6 @@ enum StandNotification {
             UNNotificationCategory(identifier: id, actions: actions, intentIdentifiers: [])
         }
         return [category(stand, standActions), category(eyes, eyeActions),
-                category(combined, standActions + Array(eyeActions.prefix(2)))]
+                category(combined, standActions + Array(eyeActions.suffix(2)))]
     }
 }

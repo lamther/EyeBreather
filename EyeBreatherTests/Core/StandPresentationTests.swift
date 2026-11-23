@@ -11,7 +11,8 @@ final class StandPresentationTests: XCTestCase {
         XCTAssertTrue(categories.contains { $0.identifier == StandNotification.eyes })
         let combined = try XCTUnwrap(categories.first { $0.identifier == StandNotification.combined })
         XCTAssertTrue(combined.actions.contains { $0.identifier == StandNotification.snooze })
-        XCTAssertTrue(combined.actions.contains { $0.identifier == "START_BREAK" })
+        XCTAssertTrue(combined.actions.contains { $0.identifier == "DELAY_5MIN" })
+        // Clicking the combined banner itself starts the eye break.
     }
 
     func testCombinedDeadlineAcceptsOnlyCurrentNotificationAndPreservesEyeClock() throws {

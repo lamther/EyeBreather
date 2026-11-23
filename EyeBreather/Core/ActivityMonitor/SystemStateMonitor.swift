@@ -205,14 +205,8 @@ final class SystemStateMonitor: ObservableObject {
             TimerManager.shared.resetWorkCycle()
             didPauseTimerForSuspension = false
         } else if didPauseTimerForSuspension {
-            TimerManager.shared.resume()
             didPauseTimerForSuspension = false
-
-            if TimerManager.shared.state == .breaking {
-                BreakWindowController.shared.showOverlay()
-            } else if TimerManager.shared.state == .preBreak {
-                NotificationCenter.default.post(name: .breakTimeReached, object: nil)
-            }
+            BreakCoordinator.shared.resumeAfterSystemSuspension()
         }
 
         ActivityMonitor.shared.startMonitoring(preservingStandActivity: true)

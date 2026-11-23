@@ -74,8 +74,9 @@ final class SystemStateMonitorTests: XCTestCase {
         XCTAssertFalse(BreakWindowController.shared.isShowingOverlay)
     }
 
-    func testUnlockReTriggersPendingBreakFromPreBreakState() {
-        let reachedExpectation = expectation(description: "break time reached after unlock")
+    func testUnlockPreservesRemainingWorkDuringPreBreakWarning() {
+        let reachedExpectation = expectation(description: "no early break on unlock")
+        reachedExpectation.isInverted = true
 
         let observer = NotificationCenter.default.addObserver(
             forName: .breakTimeReached,
@@ -89,15 +90,16 @@ final class SystemStateMonitorTests: XCTestCase {
         }
 
         timerManager.start()
-        timerManager.pause()
-        timerManager.debugSetState(.preBreak)
+        timerManager.debugAdvanceTimer(by: timerManager.workDurationSeconds - 30)
+        XCTAssertEqual(timerManager.state, .preBreak)
 
         systemStateMonitor.debugSimulateScreenLock()
         XCTAssertEqual(timerManager.state, .paused)
 
         systemStateMonitor.debugSimulateScreenUnlock()
 
-        wait(for: [reachedExpectation], timeout: 1.0)
+        wait(for: [reachedExpectation], timeout: 0.1)
+        XCTAssertEqual(timerManager.remainingWorkTime, 30)
         XCTAssertEqual(timerManager.state, .preBreak)
     }
 }

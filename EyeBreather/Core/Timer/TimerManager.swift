@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import CoreGraphics
 
 /// 计时器管理器
 @MainActor
@@ -36,6 +37,7 @@ final class TimerManager: ObservableObject {
     private var tickRemainder: TimeInterval = 0
     private var didCompleteCurrentBreak = false
     private var now: () -> Date = Date.init
+    private var readHIDIdleSeconds: () -> TimeInterval? = TimerManager.hidIdleSeconds
     private var timerEvents: NotificationCenter = .default
     private var standReminderEnabled: Bool
     private var lastStandTickDate: Date?
@@ -231,23 +233,30 @@ final class TimerManager: ObservableObject {
         if seconds >= idleThreshold || isStandUserIdle(at: date) {
             resetStandCycle(at: date)
         }
+        refreshStandActivity(at: date)
     }
     
     /// 记录用户活动
     func recordActivity(at date: Date? = nil) {
         let date = date ?? now()
-        // 长离席后第一笔输入可能先于 ActivityMonitor 的空闲检查。
-        if isStandUserIdle(at: date) {
-            resetStandCycle(at: date)
-            standTickWasBlocked = false
+        if refreshStandActivity(at: date) == nil {
+            recordStandActivity(at: date)
         }
-        lastStandActivityTime = date
         lastActivityTime = date
+    }
+
+    /// Quartz reports only elapsed time since the last HID input, including keyboard input in other apps.
+    private nonisolated static func hidIdleSeconds() -> TimeInterval? {
+        // kCGAnyInputEventType is a C macro that Swift does not import.
+        guard let anyInput = CGEventType(rawValue: UInt32.max) else { return nil }
+        let seconds = CGEventSource.secondsSinceLastEventType(.hidSystemState, eventType: anyInput)
+        return seconds.isFinite && seconds >= 0 ? seconds : nil
     }
     
     /// 检查空闲重置
     func checkIdleReset() {
         let date = now()
+        refreshStandActivity(at: date)
         if isStandUserIdle(at: date) {
             resetStandCycle(at: date)
         }
@@ -259,6 +268,11 @@ final class TimerManager: ObservableObject {
         if idleTime >= idleThreshold {
             resetWorkCycle()
         }
+    }
+
+    /// ActivityMonitor also samples while the work timer is paused or resting.
+    func sampleSystemActivity() -> Date? {
+        refreshStandActivity(at: now())
     }
     
     // MARK: - Private Methods
@@ -325,6 +339,28 @@ final class TimerManager: ObservableObject {
             && date.timeIntervalSince(lastStandActivityTime) >= TimeInterval(settings.idleResetThreshold * 60)
     }
 
+    @discardableResult
+    private func refreshStandActivity(at date: Date) -> Date? {
+        guard SettingsManager.shared.settings.enableActivityDetection,
+              let idleSeconds = readHIDIdleSeconds() else { return nil }
+        let lastInput = date.addingTimeInterval(-idleSeconds)
+        recordStandActivity(at: lastInput)
+        if lastInput > lastActivityTime {
+            lastActivityTime = lastInput
+        }
+        return lastInput
+    }
+
+    private func recordStandActivity(at date: Date) {
+        guard date > lastStandActivityTime else { return }
+        // If input resumes between ticks, compare the two activity timestamps before replacing the previous one.
+        if isStandUserIdle(at: date) {
+            resetStandCycle(at: date)
+            standTickWasBlocked = false
+        }
+        lastStandActivityTime = date
+    }
+
     private func canCountStandWork(at date: Date) -> Bool {
         standReminderEnabled
             && (state == .working || state == .preBreak)
@@ -335,7 +371,9 @@ final class TimerManager: ObservableObject {
     }
 
     private func updateStandClock(at date: Date) {
-        guard let previousTick = lastStandTickDate, standReminderEnabled else { return }
+        guard lastStandTickDate != nil, standReminderEnabled else { return }
+        refreshStandActivity(at: date)
+        guard let previousTick = lastStandTickDate else { return }
         let wasBlocked = standTickWasBlocked
         lastStandTickDate = date
         standTickWasBlocked = !canCountStandWork(at: date)
@@ -443,9 +481,14 @@ extension TimerManager {
         advanceTimer(by: seconds)
     }
 
-    func debugUseClock(_ clock: @escaping () -> Date, events: NotificationCenter) {
+    func debugUseClock(
+        _ clock: @escaping () -> Date,
+        events: NotificationCenter,
+        hidIdleSeconds: @escaping () -> TimeInterval? = { nil }
+    ) {
         now = clock
         timerEvents = events
+        readHIDIdleSeconds = hidIdleSeconds
         lastStandActivityTime = now()
     }
 
@@ -457,6 +500,7 @@ extension TimerManager {
         stopTimer()
         now = Date.init
         timerEvents = .default
+        readHIDIdleSeconds = Self.hidIdleSeconds
         lastStandActivityTime = now()
         resetStandCycle()
         stateBeforePause = nil
