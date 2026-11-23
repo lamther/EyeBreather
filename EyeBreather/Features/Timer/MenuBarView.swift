@@ -9,6 +9,7 @@ struct MenuBarView: View {
     @ObservedObject private var statisticsManager = BreakStatisticsManager.shared
     @ObservedObject private var settingsManager = SettingsManager.shared
     
+    @State private var showingStandActions = false
     @Environment(\.modelContext) private var modelContext
     
     var body: some View {
@@ -140,16 +141,7 @@ struct MenuBarView: View {
 
     /// 轻量次要入口，护眼圆环仍保持为主要计时信息。
     private var standReminderView: some View {
-        Menu {
-            Button("我刚站过") {
-                BreakCoordinator.shared.confirmStanding()
-            }
-            if timerManager.standReminderPending {
-                Button("10 分钟后提醒") {
-                    BreakCoordinator.shared.snoozeStanding()
-                }
-            }
-        } label: {
+        Button { showingStandActions.toggle() } label: {
             HStack(spacing: 5) {
                 Image(systemName: "figure.stand")
                 if timerManager.standReminderPending {
@@ -169,8 +161,22 @@ struct MenuBarView: View {
             .padding(.vertical, 2)
             .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
+        .buttonStyle(.plain)
+        .popover(isPresented: $showingStandActions) {
+            VStack(alignment: .leading, spacing: 8) {
+                Button("我刚站过") {
+                    showingStandActions = false
+                    BreakCoordinator.shared.confirmStanding()
+                }
+                if timerManager.standReminderPending {
+                    Button("10 分钟后提醒") {
+                        showingStandActions = false
+                        BreakCoordinator.shared.snoozeStanding()
+                    }
+                }
+            }
+            .padding(10)
+        }
         .fixedSize()
         .accessibilityLabel(timerManager.standReminderPending
             ? "该起身活动了"

@@ -120,7 +120,7 @@ final class BreakCoordinator: ObservableObject {
     }
     
     private func handleBreakTimeReached() {
-        guard canStartBreakNow else { return }
+        guard canStartBreakNow, TimerManager.shared.remainingWorkTime == 0 else { return }
         
         // A stand deadline can fall during the gentle reminder’s 30-second grace period.
         guard !breakTriggered else {
@@ -130,7 +130,7 @@ final class BreakCoordinator: ObservableObject {
         let timer = TimerManager.shared
         if timer.isStandDue && MediaDeviceMonitor.shared.meetingAtStandDeadline() { return }
         breakTriggered = true
-        if waitingCombinedCycle != nil && timer.remainingWorkTime == 0 {
+        if let cycle = waitingCombinedCycle, cycle == standCycle {
             scheduleAutoBreak()
             return
         }
@@ -175,10 +175,13 @@ final class BreakCoordinator: ObservableObject {
         cancelAutoBreak()
         
         // 性能优化：设置 tolerance 允许系统合并唤醒
-        let timer = Timer(timeInterval: gentleModeWaitSeconds, repeats: false) { [weak self] _ in
+        let timer = Timer(timeInterval: gentleModeWaitSeconds, repeats: false) { [weak self] timer in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                guard self.canStartBreakNow else {
+                guard self.autoBreakTimer === timer else { return }
+                self.autoBreakTimer = nil
+                let meetingStarted = self.combinedStandOverlay && MediaDeviceMonitor.shared.meetingAtStandDeadline()
+                guard self.canStartBreakNow, !meetingStarted else {
                     self.breakTriggered = false
                     return
                 }

@@ -55,7 +55,10 @@ final class StandPresentationTests: XCTestCase {
         XCTAssertEqual(timer.remainingWorkTime, 0)
         timer.resetWorkCycle()
         XCTAssertFalse(coordinator.acceptsCombinedEyeAction(cycle: cycle))
+        timer.debugAdvanceTimer(by: 17)
+        let skipped = BreakStatisticsManager.shared.todayStatistics.skippedBreaks
         delegate.handleNotificationAction(actionIdentifier: "SKIP_BREAK", categoryIdentifier: StandNotification.combined, standCycle: cycle)
-        XCTAssertEqual(timer.remainingWorkTime, 600)
+        XCTAssertEqual(timer.remainingWorkTime, 583)
+        XCTAssertEqual(BreakStatisticsManager.shared.todayStatistics.skippedBreaks, skipped)
     }
 }
