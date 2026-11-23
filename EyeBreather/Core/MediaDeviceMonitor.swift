@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import Combine
 import CoreMediaIO
+import CoreAudio
 
 /// 媒体设备监视器 - 检测摄像头和麦克风使用状态
 @MainActor
@@ -168,8 +169,31 @@ final class MediaDeviceMonitor: ObservableObject {
     }
     
     private func checkMicrophoneInUse() -> Bool {
-        // 简化检测：如果摄像头在使用，通常麦克风也在使用（会议场景）
-        return isCameraInUse
+        guard SettingsManager.shared.settings.standReminderEnabled else { return isCameraInUse }
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        var bytes: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &bytes) == noErr, bytes > 0 else { return false }
+        var processes = [AudioObjectID](repeating: 0, count: Int(bytes) / MemoryLayout<AudioObjectID>.stride)
+        let result = processes.withUnsafeMutableBytes { buffer in
+            AudioObjectGetPropertyData(system, &address, 0, nil, &bytes, buffer.baseAddress!)
+        }
+        guard result == noErr else { return false }
+        address.mSelector = kAudioProcessPropertyIsRunningInput
+        return processes.contains { process in
+            var running: UInt32 = 0
+            var size = UInt32(MemoryLayout.size(ofValue: running))
+            return AudioObjectGetPropertyData(process, &address, 0, nil, &size, &running) == noErr && running != 0
+        }
+    }
+
+    /// Recheck at the deadline, including the gap before the regular device poll.
+    func meetingAtStandDeadline() -> Bool {
+        guard SettingsManager.shared.settings.enableMeetingDetection else { return false }
+        checkDeviceStatus()
+        return isInMeeting
     }
 }
 

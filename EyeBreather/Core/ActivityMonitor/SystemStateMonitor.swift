@@ -199,9 +199,7 @@ final class SystemStateMonitor: ObservableObject {
         let sleepDuration = calculateSleepDuration()
         let idleThreshold = SettingsManager.shared.settings.idleResetThreshold * 60
 
-        if sleepDuration >= idleThreshold {
-            TimerManager.shared.resetStandCycle()
-        }
+        TimerManager.shared.checkStandIdleAfterSuspension(seconds: sleepDuration)
 
         if sleepDuration >= idleThreshold, didPauseTimerForSuspension {
             TimerManager.shared.resetWorkCycle()
@@ -217,7 +215,7 @@ final class SystemStateMonitor: ObservableObject {
             }
         }
 
-        ActivityMonitor.shared.startMonitoring()
+        ActivityMonitor.shared.startMonitoring(preservingStandActivity: true)
         NotificationCenter.default.post(name: .shouldResumeReminder, object: nil)
         lastSleepTime = nil
     }

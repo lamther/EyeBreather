@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import UserNotifications
 import Combine
+import OSLog
 
 /// 休息协调器
 /// 负责监听计时器事件并协调休息流程
@@ -9,6 +10,8 @@ import Combine
 final class BreakCoordinator: ObservableObject {
     @Published private(set) var combinedStandOverlay = false
     private(set) var standCycle: String?
+    private var waitingCombinedCycle: String?
+    private let logger = Logger(subsystem: "com.eyebreather.app", category: "StandReminder")
     /// 共享实例
     static let shared = BreakCoordinator()
     
@@ -35,11 +38,22 @@ final class BreakCoordinator: ObservableObject {
     
     private func setupObservers() {
         let timer = TimerManager.shared
+        NotificationCenter.default.publisher(for: .eyeWorkCycleReset)
+            .sink { [weak self] _ in
+                guard let self, waitingCombinedCycle != nil else { return }
+                cancelAutoBreak()
+                waitingCombinedCycle = nil
+                combinedStandOverlay = false
+                breakTriggered = false
+            }
+            .store(in: &cancellables)
         timer.$standReminderPending.removeDuplicates().filter { !$0 }
             .sink { [weak self] _ in self?.clearStandPresentation() }
             .store(in: &cancellables)
         NotificationCenter.default.publisher(for: .standTimeReached)
-            .sink { [weak self] _ in self?.handleStandTimeReached() }
+            .sink { [weak self] event in
+                self?.handleStandTimeReached(includesEyeWarning: event.userInfo?["includesEyeWarning"] as? Bool == true)
+            }
             .store(in: &cancellables)
 
         // 监听休息预警
@@ -113,14 +127,20 @@ final class BreakCoordinator: ObservableObject {
             handleStandTimeReached()
             return
         }
+        let timer = TimerManager.shared
+        if timer.isStandDue && MediaDeviceMonitor.shared.meetingAtStandDeadline() { return }
         breakTriggered = true
+        if waitingCombinedCycle != nil && timer.remainingWorkTime == 0 {
+            scheduleAutoBreak()
+            return
+        }
+        waitingCombinedCycle = nil
         
         // 检查新的一天，重置统计
         BreakStatisticsManager.shared.resetConsecutiveSkipsIfNewDay()
         
         let settings = SettingsManager.shared.settings
         
-        let timer = TimerManager.shared
         let includeStand = timer.isStandDue
         if includeStand {
             beginStandPresentation(combined: true)
@@ -239,6 +259,7 @@ final class BreakCoordinator: ObservableObject {
 
     private func startBreak(withStanding: Bool) {
         cancelAutoBreak()
+        waitingCombinedCycle = nil
         didPauseForReminder = false
         combinedStandOverlay = withStanding || (combinedStandOverlay && TimerManager.shared.standReminderPending)
         if !combinedStandOverlay || !SettingsManager.shared.settings.standVoiceEnabled {
@@ -250,6 +271,7 @@ final class BreakCoordinator: ObservableObject {
     
     func skipBreak() {
         cancelAutoBreak()
+        waitingCombinedCycle = nil
         didPauseForReminder = false
         breakTriggered = false
         combinedStandOverlay = false
@@ -260,6 +282,7 @@ final class BreakCoordinator: ObservableObject {
     
     func delayBreak(minutes: Int) {
         cancelAutoBreak()
+        waitingCombinedCycle = nil
         didPauseForReminder = false
         breakTriggered = false
         combinedStandOverlay = false
@@ -281,24 +304,38 @@ final class BreakCoordinator: ObservableObject {
     
     // MARK: - Standing reminders
 
-    private func handleStandTimeReached() {
+    private func handleStandTimeReached(includesEyeWarning: Bool = false) {
         let timer = TimerManager.shared
-        guard canStartBreakNow, timer.isStandDue else { return }
+        guard canStartBreakNow, timer.isStandDue, !MediaDeviceMonitor.shared.meetingAtStandDeadline() else { return }
         beginStandPresentation(combined: false)
         let content = UNMutableNotificationContent()
         content.title = StandNotification.message
         content.body = "距离上次起身，已累计工作 \(timer.elapsedStandWorkSeconds / 60) 分钟。"
+        if includesEyeWarning { content.body += "护眼休息将在 \(timer.remainingWorkTime) 秒后开始。" }
         content.categoryIdentifier = StandNotification.stand
         if let standCycle { content.userInfo = [StandNotification.cycleKey: standCycle] }
-        UNUserNotificationCenter.current().add(UNNotificationRequest(
-            identifier: "stand-reminder", content: content, trigger: nil
-        ))
+        submitStandNotification(content)
     }
 
     private func beginStandPresentation(combined: Bool) {
         standCycle = UUID().uuidString
         TimerManager.shared.markStandReminderPresented()
         SoundManager.shared.speakStandReminder(combined ? StandNotification.combinedMessage : StandNotification.message)
+    }
+
+    func acceptsCombinedEyeAction(cycle: String?) -> Bool {
+        guard let cycle else { return false }
+        let timer = TimerManager.shared
+        return cycle == waitingCombinedCycle && cycle == standCycle && breakTriggered
+            && timer.remainingWorkTime == 0 && (timer.state == .working || timer.state == .preBreak)
+            && canStartBreakNow
+    }
+
+    private func submitStandNotification(_ content: UNNotificationContent) {
+        let request = UNNotificationRequest(identifier: "stand-reminder", content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(request) { [logger] error in
+            if let error { logger.error("Standing notification submission failed: \(error.localizedDescription, privacy: .public)") }
+        }
     }
 
     private func clearStandPresentation() {
@@ -361,13 +398,19 @@ final class BreakCoordinator: ObservableObject {
         content.body = includingStand ? "起身活动两分钟，让眼睛也休息一下。" : "是时候让眼睛休息一下了"
         content.categoryIdentifier = includingStand ? StandNotification.combined : StandNotification.eyes
         if includingStand, let standCycle {
+            waitingCombinedCycle = standCycle
+            if !SettingsManager.shared.settings.standVoiceEnabled && SettingsManager.shared.settings.enableSound {
+                content.sound = .default
+            }
             content.userInfo = [StandNotification.cycleKey: standCycle]
+            submitStandNotification(content)
+            return
         } else {
             content.sound = .default
         }
 
         let request = UNNotificationRequest(
-            identifier: includingStand ? "stand-reminder" : "break-reminder",
+            identifier: "break-reminder",
             content: content,
             trigger: nil
         )

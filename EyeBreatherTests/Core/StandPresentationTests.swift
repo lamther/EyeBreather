@@ -39,6 +39,8 @@ final class StandPresentationTests: XCTestCase {
         XCTAssertTrue(coordinator.combinedStandOverlay)
         let cycle = try XCTUnwrap(coordinator.standCycle)
         let delegate = AppDelegate()
+        XCTAssertTrue(coordinator.acceptsCombinedEyeAction(cycle: cycle))
+        XCTAssertFalse(coordinator.acceptsCombinedEyeAction(cycle: "stale"))
         delegate.handleNotificationAction(actionIdentifier: StandNotification.confirm,
                                           categoryIdentifier: StandNotification.combined, standCycle: "stale")
         XCTAssertTrue(timer.standReminderPending)
@@ -51,5 +53,9 @@ final class StandPresentationTests: XCTestCase {
         coordinator.confirmStanding()
         XCTAssertEqual(timer.elapsedStandWorkSeconds, 0)
         XCTAssertEqual(timer.remainingWorkTime, 0)
+        timer.resetWorkCycle()
+        XCTAssertFalse(coordinator.acceptsCombinedEyeAction(cycle: cycle))
+        delegate.handleNotificationAction(actionIdentifier: "SKIP_BREAK", categoryIdentifier: StandNotification.combined, standCycle: cycle)
+        XCTAssertEqual(timer.remainingWorkTime, 600)
     }
 }

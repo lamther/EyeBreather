@@ -187,6 +187,7 @@ final class TimerManager: ObservableObject {
     
     /// 重置工作周期
     func resetWorkCycle() {
+        NotificationCenter.default.post(name: .eyeWorkCycleReset, object: self)
         updateStandClock(at: now())
         stopTimer()
         stateBeforePause = nil
@@ -222,6 +223,14 @@ final class TimerManager: ObservableObject {
     /// 活动监听启动或恢复时建立新的空闲基准。
     func beginActivityTracking(at date: Date) {
         lastStandActivityTime = date
+    }
+
+    func checkStandIdleAfterSuspension(seconds: Int) {
+        let date = now()
+        let idleThreshold = SettingsManager.shared.settings.idleResetThreshold * 60
+        if seconds >= idleThreshold || isStandUserIdle(at: date) {
+            resetStandCycle(at: date)
+        }
     }
     
     /// 记录用户活动
@@ -380,7 +389,11 @@ final class TimerManager: ObservableObject {
             if elapsedWorkTime >= workDurationSeconds {
                 timerEvents.post(name: .breakTimeReached, object: nil)
             } else if isStandDue {
-                timerEvents.post(name: .standTimeReached, object: nil)
+                timerEvents.post(
+                    name: .standTimeReached,
+                    object: nil,
+                    userInfo: ["includesEyeWarning": enteredWarning]
+                )
             } else if enteredWarning {
                 timerEvents.post(name: .preBreakWarning, object: nil)
             }
@@ -410,6 +423,7 @@ final class TimerManager: ObservableObject {
 // MARK: - Notification Names
 
 extension Notification.Name {
+    static let eyeWorkCycleReset = Notification.Name("com.eyebreather.eyeWorkCycleReset")
     static let preBreakWarning = Notification.Name("com.eyebreather.preBreakWarning")
     static let breakTimeReached = Notification.Name("com.eyebreather.breakTimeReached")
     static let breakCompleted = Notification.Name("com.eyebreather.breakCompleted")

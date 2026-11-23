@@ -88,6 +88,50 @@ final class StandTimerTests: XCTestCase {
         XCTAssertEqual(timer.elapsedStandWorkSeconds, 5)
     }
 
+    func testInactivityBeforeAndDuringLockCountsTowardOneIdleThreshold() {
+        let system = SystemStateMonitor.shared
+        system.debugResetState()
+        defer { system.debugResetState() }
+        SettingsManager.shared.settings.enableActivityDetection = true
+        SettingsManager.shared.settings.idleResetThreshold = 5
+
+        tick(after: 3 * 60)
+        XCTAssertEqual(timer.elapsedStandWorkSeconds, 3 * 60)
+        system.debugSimulateScreenLock()
+        clock += 3 * 60
+        system.debugSetSuspensionDuration(3 * 60)
+        system.debugSimulateScreenUnlock()
+
+        XCTAssertEqual(timer.elapsedStandWorkSeconds, 0)
+        tick(after: 5)
+        XCTAssertEqual(timer.elapsedStandWorkSeconds, 0)
+        timer.recordActivity()
+        tick(after: 5)
+        XCTAssertEqual(timer.elapsedStandWorkSeconds, 5)
+    }
+
+    func testUnlockAndUnrelatedSettingsPreserveIdleTimeJustBelowThreshold() {
+        let system = SystemStateMonitor.shared
+        system.debugResetState()
+        defer { system.debugResetState() }
+        SettingsManager.shared.settings.enableActivityDetection = true
+        SettingsManager.shared.settings.idleResetThreshold = 5
+
+        tick(after: 3 * 60)
+        system.debugSimulateScreenLock()
+        clock += 119
+        system.debugSetSuspensionDuration(119)
+        system.debugSimulateScreenUnlock()
+        XCTAssertEqual(timer.elapsedStandWorkSeconds, 3 * 60)
+        let handledSettingChange = expectation(description: "activity monitor processed the setting change")
+        SettingsManager.shared.settings.customTipsText += "。"
+        DispatchQueue.main.async { handledSettingChange.fulfill() }
+        wait(for: [handledSettingChange], timeout: 1)
+
+        tick(after: 1)
+        XCTAssertEqual(timer.elapsedStandWorkSeconds, 0)
+    }
+
     func testFirstActivityAfterThresholdResetsEvenBeforeIdleCheck() {
         SettingsManager.shared.settings.enableActivityDetection = true
         SettingsManager.shared.settings.idleResetThreshold = 1
@@ -175,6 +219,7 @@ final class StandTimerTests: XCTestCase {
         XCTAssertEqual(timer.elapsedStandWorkSeconds, 1199)
         XCTAssertTrue(timer.standReminderPending)
         XCTAssertEqual(events.names, [.standTimeReached])
+        XCTAssertEqual(events.includesEyeWarning, [false])
 
         tick(after: 1)
         XCTAssertFalse(timer.standReminderPending)
@@ -189,6 +234,7 @@ final class StandTimerTests: XCTestCase {
         tick(after: 600)
         XCTAssertTrue(timer.isStandDue)
         XCTAssertEqual(events.names, [.breakTimeReached])
+        XCTAssertTrue(events.includesEyeWarning.isEmpty)
 
         timer.resetStandCycle()
         timer.resetWorkCycle()
@@ -198,6 +244,7 @@ final class StandTimerTests: XCTestCase {
         tick(after: 600)
         XCTAssertEqual(timer.state, .preBreak)
         XCTAssertEqual(events.names, [.standTimeReached])
+        XCTAssertEqual(events.includesEyeWarning, [true])
 
         timer.markStandReminderPresented()
         tick(after: 5)
@@ -208,15 +255,20 @@ final class StandTimerTests: XCTestCase {
 @MainActor
 private final class StandTimerEventRecorder {
     var names: [Notification.Name] = []
+    var includesEyeWarning: [Bool] = []
     private let center: NotificationCenter
     private var observers: [NSObjectProtocol] = []
 
     init(center: NotificationCenter) {
         self.center = center
         observers = [.standTimeReached, .breakTimeReached, .preBreakWarning].map { name in
-            center.addObserver(forName: name, object: nil, queue: nil) { [weak self] _ in
+            center.addObserver(forName: name, object: nil, queue: nil) { [weak self] notification in
+                let includesEyeWarning = notification.userInfo?["includesEyeWarning"] as? Bool
                 MainActor.assumeIsolated {
                     self?.names.append(name)
+                    if let includesEyeWarning {
+                        self?.includesEyeWarning.append(includesEyeWarning)
+                    }
                 }
             }
         }

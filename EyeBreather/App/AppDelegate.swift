@@ -82,6 +82,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 return
             }
         }
+        if categoryIdentifier == StandNotification.combined,
+           !BreakCoordinator.shared.acceptsCombinedEyeAction(cycle: standCycle) { return }
         switch actionIdentifier {
         case "START_BREAK":
             BreakCoordinator.shared.startBreak()

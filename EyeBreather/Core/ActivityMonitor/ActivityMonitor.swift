@@ -60,26 +60,28 @@ final class ActivityMonitor: ObservableObject {
     // MARK: - Public Methods
     
     /// 开始监听用户活动
-    func startMonitoring() {
+    func startMonitoring(preservingStandActivity: Bool = false) {
         monitoringRequested = true
-        updateMonitoringState()
+        updateMonitoringState(preservingStandActivity: preservingStandActivity)
     }
 
-    private func updateMonitoringState() {
+    private func updateMonitoringState(preservingStandActivity: Bool = false) {
         if monitoringRequested && SettingsManager.shared.settings.enableActivityDetection {
-            startEventMonitoring()
+            startEventMonitoring(preservingStandActivity: preservingStandActivity)
         } else {
             stopEventMonitoring()
         }
     }
 
-    private func startEventMonitoring() {
+    private func startEventMonitoring(preservingStandActivity: Bool) {
         guard !isMonitoring else { return }
         
         isMonitoring = true
         lastActivityTime = Date()
         isIdle = false
-        TimerManager.shared.beginActivityTracking(at: lastActivityTime)
+        if !preservingStandActivity {
+            TimerManager.shared.beginActivityTracking(at: lastActivityTime)
+        }
         
         // 监听全局鼠标和键盘事件
         // 性能优化：鼠标移动事件节流，其他事件直接处理
