@@ -40,7 +40,7 @@ final class BreakCoordinator: ObservableObject {
         let timer = TimerManager.shared
         NotificationCenter.default.publisher(for: .eyeWorkCycleReset)
             .sink { [weak self] _ in
-                guard let self, waitingCombinedCycle != nil else { return }
+                guard let self else { return }
                 cancelAutoBreak()
                 waitingCombinedCycle = nil
                 combinedStandOverlay = false
@@ -178,7 +178,7 @@ final class BreakCoordinator: ObservableObject {
         let timer = Timer(timeInterval: gentleModeWaitSeconds, repeats: false) { [weak self] timer in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                guard self.autoBreakTimer === timer else { return }
+                guard self.autoBreakTimer === timer, TimerManager.shared.remainingWorkTime == 0 else { return }
                 self.autoBreakTimer = nil
                 let meetingStarted = self.combinedStandOverlay && MediaDeviceMonitor.shared.meetingAtStandDeadline()
                 guard self.canStartBreakNow, !meetingStarted else {
@@ -367,7 +367,7 @@ final class BreakCoordinator: ObservableObject {
     }
 
     private func clearStandPresentation() {
-        let shouldKeepEyeActions = standCycle != nil && standCycle == waitingCombinedCycle && breakTriggered
+        let shouldKeepEyeActions = combinedStandOverlay && autoBreakTimer != nil && breakTriggered
             && TimerManager.shared.remainingWorkTime == 0 && canStartBreakNow
         let hadStandPresentation = standCycle != nil
         standCycle = nil
