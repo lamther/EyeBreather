@@ -7,7 +7,9 @@ struct MenuBarView: View {
     @ObservedObject private var appDetector = AppDetector.shared
     @ObservedObject private var mediaMonitor = MediaDeviceMonitor.shared
     @ObservedObject private var statisticsManager = BreakStatisticsManager.shared
+    @ObservedObject private var settingsManager = SettingsManager.shared
     
+    @State private var showingStandActions = false
     @Environment(\.modelContext) private var modelContext
     
     var body: some View {
@@ -16,7 +18,12 @@ struct MenuBarView: View {
             circularTimerView
             
             // 状态指示
-            statusIndicatorView
+            VStack(spacing: 6) {
+                statusIndicatorView
+                if settingsManager.settings.standReminderEnabled {
+                    standReminderView
+                }
+            }
             
             // 操作按钮
             actionButtonsView
@@ -131,6 +138,55 @@ struct MenuBarView: View {
     }
     
     // MARK: - Action Buttons
+
+    /// 轻量次要入口，护眼圆环仍保持为主要计时信息。
+    private var standReminderView: some View {
+        Button { showingStandActions.toggle() } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "figure.stand")
+                if timerManager.standReminderPending {
+                    Text("该起身活动了")
+                } else {
+                    Text("距起身还有")
+                    Text("\(remainingStandMinutes) 分钟")
+                        .fontWeight(.medium)
+                        .foregroundColor(.primary)
+                        .monospacedDigit()
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .medium))
+            }
+            .font(.caption)
+            .foregroundColor(.secondary)
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showingStandActions) {
+            VStack(alignment: .leading, spacing: 8) {
+                Button("我刚站过") {
+                    showingStandActions = false
+                    BreakCoordinator.shared.confirmStanding()
+                }
+                if timerManager.standReminderPending {
+                    Button("10 分钟后提醒") {
+                        showingStandActions = false
+                        BreakCoordinator.shared.snoozeStanding()
+                    }
+                }
+            }
+            .padding(10)
+        }
+        .fixedSize()
+        .accessibilityLabel(timerManager.standReminderPending
+            ? "该起身活动了"
+            : "距起身还有 \(remainingStandMinutes) 分钟")
+        .accessibilityHint("记录已起身，或在提醒后延后 10 分钟")
+    }
+
+    private var remainingStandMinutes: Int {
+        Int(ceil(Double(max(0, timerManager.remainingStandSeconds)) / 60))
+    }
     
     private var actionButtonsView: some View {
         HStack(spacing: 12) {

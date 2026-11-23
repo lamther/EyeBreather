@@ -26,6 +26,7 @@ final class ActivityMonitor: ObservableObject {
     private var idleCheckTimer: Timer?
     private var cancellables = Set<AnyCancellable>()
     private var pendingActivityUpdate = false
+    private var monitoringRequested = false
     
     /// 鼠标移动事件节流：上次处理时间
     private var lastMouseMoveTime: Date = .distantPast
@@ -51,13 +52,7 @@ final class ActivityMonitor: ObservableObject {
         NotificationCenter.default.publisher(for: .settingsDidChange)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
-                // 设置变更时可能需要更新监听状态
-                guard let self = self else { return }
-                if self.isMonitoring {
-                    // 重新启动以应用新设置
-                    self.stopMonitoring()
-                    self.startMonitoring()
-                }
+                self?.updateMonitoringState()
             }
             .store(in: &cancellables)
     }
@@ -65,13 +60,28 @@ final class ActivityMonitor: ObservableObject {
     // MARK: - Public Methods
     
     /// 开始监听用户活动
-    func startMonitoring() {
+    func startMonitoring(preservingStandActivity: Bool = false) {
+        monitoringRequested = true
+        updateMonitoringState(preservingStandActivity: preservingStandActivity)
+    }
+
+    private func updateMonitoringState(preservingStandActivity: Bool = false) {
+        if monitoringRequested && SettingsManager.shared.settings.enableActivityDetection {
+            startEventMonitoring(preservingStandActivity: preservingStandActivity)
+        } else {
+            stopEventMonitoring()
+        }
+    }
+
+    private func startEventMonitoring(preservingStandActivity: Bool) {
         guard !isMonitoring else { return }
-        guard SettingsManager.shared.settings.enableActivityDetection else { return }
         
         isMonitoring = true
         lastActivityTime = Date()
         isIdle = false
+        if !preservingStandActivity {
+            TimerManager.shared.beginActivityTracking(at: lastActivityTime)
+        }
         
         // 监听全局鼠标和键盘事件
         // 性能优化：鼠标移动事件节流，其他事件直接处理
@@ -80,7 +90,7 @@ final class ActivityMonitor: ObservableObject {
         ) { [weak self] event in
             guard let self = self else { return }
             
-            // 鼠标移动事件节流：每 0.5 秒最多处理一次
+            // 鼠标移动事件节流
             if event.type == .mouseMoved {
                 let now = Date()
                 // 同步检查节流（避免创建过多 Task）
@@ -99,6 +109,11 @@ final class ActivityMonitor: ObservableObject {
     
     /// 停止监听
     func stopMonitoring() {
+        monitoringRequested = false
+        stopEventMonitoring()
+    }
+
+    private func stopEventMonitoring() {
         guard isMonitoring else { return }
         
         isMonitoring = false
@@ -119,7 +134,7 @@ final class ActivityMonitor: ObservableObject {
         isIdle = false
         
         // 通知 TimerManager
-        TimerManager.shared.recordActivity()
+        TimerManager.shared.recordActivity(at: lastActivityTime)
         
         // 如果从空闲恢复，发送通知
         if wasIdle {
@@ -136,6 +151,7 @@ final class ActivityMonitor: ObservableObject {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.pendingActivityUpdate = false
+            guard self.isMonitoring else { return }
             self.recordActivity()
         }
     }
@@ -154,8 +170,13 @@ final class ActivityMonitor: ObservableObject {
     }
     
     private func checkIdleStatus() {
+        guard isMonitoring else { return }
+        let now = Date()
+        if let lastInput = TimerManager.shared.sampleSystemActivity(), lastInput > lastActivityTime {
+            lastActivityTime = lastInput
+        }
         let idleThreshold = SettingsManager.shared.settings.idleResetThreshold * 60
-        let idleTime = Int(Date().timeIntervalSince(lastActivityTime))
+        let idleTime = Int(now.timeIntervalSince(lastActivityTime))
         
         let wasIdle = isIdle
         isIdle = idleTime >= idleThreshold
@@ -166,6 +187,8 @@ final class ActivityMonitor: ObservableObject {
             
             // 通知 TimerManager 检查是否需要重置
             TimerManager.shared.checkIdleReset()
+        } else if wasIdle && !isIdle {
+            NotificationCenter.default.post(name: .userBecameActive, object: nil)
         }
     }
     

@@ -2,6 +2,7 @@ import Foundation
 import AVFoundation
 import Combine
 import CoreMediaIO
+import CoreAudio
 
 /// 媒体设备监视器 - 检测摄像头和麦克风使用状态
 @MainActor
@@ -168,8 +169,38 @@ final class MediaDeviceMonitor: ObservableObject {
     }
     
     private func checkMicrophoneInUse() -> Bool {
-        // 简化检测：如果摄像头在使用，通常麦克风也在使用（会议场景）
-        return isCameraInUse
+        guard SettingsManager.shared.settings.standReminderEnabled else { return isCameraInUse }
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        let system = AudioObjectID(kAudioObjectSystemObject)
+        var bytes: UInt32 = 0
+        guard AudioObjectGetPropertyDataSize(system, &address, 0, nil, &bytes) == noErr else { return isMicrophoneInUse }
+        guard bytes >= MemoryLayout<AudioObjectID>.stride else { return false }
+        var processes = [AudioObjectID](repeating: 0, count: Int(bytes) / MemoryLayout<AudioObjectID>.stride)
+        let result = processes.withUnsafeMutableBytes { buffer in
+            AudioObjectGetPropertyData(system, &address, 0, nil, &bytes, buffer.baseAddress!)
+        }
+        guard result == noErr else { return isMicrophoneInUse }
+        address.mSelector = kAudioProcessPropertyIsRunningInput
+        var hadReadError = false
+        for process in processes.prefix(Int(bytes) / MemoryLayout<AudioObjectID>.stride) {
+            var running: UInt32 = 0
+            var size = UInt32(MemoryLayout.size(ofValue: running))
+            if AudioObjectGetPropertyData(process, &address, 0, nil, &size, &running) != noErr {
+                hadReadError = true
+            } else if running != 0 {
+                return true
+            }
+        }
+        return hadReadError && isMicrophoneInUse
+    }
+
+    /// Recheck at the deadline, including the gap before the regular device poll.
+    func meetingAtStandDeadline() -> Bool {
+        guard SettingsManager.shared.settings.enableMeetingDetection else { return false }
+        checkDeviceStatus()
+        return isInMeeting
     }
 }
 

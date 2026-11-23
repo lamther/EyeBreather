@@ -199,21 +199,17 @@ final class SystemStateMonitor: ObservableObject {
         let sleepDuration = calculateSleepDuration()
         let idleThreshold = SettingsManager.shared.settings.idleResetThreshold * 60
 
+        TimerManager.shared.checkStandIdleAfterSuspension(seconds: sleepDuration)
+
         if sleepDuration >= idleThreshold, didPauseTimerForSuspension {
             TimerManager.shared.resetWorkCycle()
             didPauseTimerForSuspension = false
         } else if didPauseTimerForSuspension {
-            TimerManager.shared.resume()
             didPauseTimerForSuspension = false
-
-            if TimerManager.shared.state == .breaking {
-                BreakWindowController.shared.showOverlay()
-            } else if TimerManager.shared.state == .preBreak {
-                NotificationCenter.default.post(name: .breakTimeReached, object: nil)
-            }
+            BreakCoordinator.shared.resumeAfterSystemSuspension()
         }
 
-        ActivityMonitor.shared.startMonitoring()
+        ActivityMonitor.shared.startMonitoring(preservingStandActivity: true)
         NotificationCenter.default.post(name: .shouldResumeReminder, object: nil)
         lastSleepTime = nil
     }
@@ -235,6 +231,10 @@ extension SystemStateMonitor {
 
     func debugSimulateSystemDidWake() {
         handleSystemDidWake()
+    }
+
+    func debugSetSuspensionDuration(_ seconds: TimeInterval) {
+        lastSleepTime = Date().addingTimeInterval(-seconds)
     }
 
     func debugResetState() {

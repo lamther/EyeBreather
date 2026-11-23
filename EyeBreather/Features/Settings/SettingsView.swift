@@ -341,6 +341,36 @@ struct BreakRulesSectionContent: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
             }
+
+            SettingsCard(title: "起身提醒", footer: "累计工作到设定间隔后，提醒起身走两分钟；会议和暂停期间不计时。") {
+                VStack(spacing: 0) {
+                    Toggle(isOn: $settingsManager.settings.standReminderEnabled) {
+                        SettingsRow(title: "启用起身提醒")
+                    }
+                    .toggleStyle(.switch)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+
+                    Divider().padding(.leading, 12)
+
+                    Stepper(value: $settingsManager.settings.standIntervalMinutes, in: 10...120, step: 5) {
+                        SettingsRow(title: "提醒间隔", value: "\(settingsManager.settings.standIntervalMinutes) 分钟")
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .disabled(!settingsManager.settings.standReminderEnabled)
+
+                    Divider().padding(.leading, 12)
+
+                    Toggle(isOn: $settingsManager.settings.standVoiceEnabled) {
+                        SettingsRow(title: "中文语音提醒")
+                    }
+                    .toggleStyle(.switch)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .disabled(!settingsManager.settings.standReminderEnabled)
+                }
+            }
         }
     }
 }

@@ -2,11 +2,16 @@ import Foundation
 import AppKit
 import UserNotifications
 import Combine
+import OSLog
 
 /// 休息协调器
 /// 负责监听计时器事件并协调休息流程
 @MainActor
-final class BreakCoordinator {
+final class BreakCoordinator: ObservableObject {
+    @Published private(set) var combinedStandOverlay = false
+    private(set) var standCycle: String?
+    private var waitingCombinedCycle: String?
+    private let logger = Logger(subsystem: "com.eyebreather.app", category: "StandReminder")
     /// 共享实例
     static let shared = BreakCoordinator()
     
@@ -32,6 +37,25 @@ final class BreakCoordinator {
     // MARK: - Setup
     
     private func setupObservers() {
+        let timer = TimerManager.shared
+        NotificationCenter.default.publisher(for: .eyeWorkCycleReset)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                cancelAutoBreak()
+                waitingCombinedCycle = nil
+                combinedStandOverlay = false
+                breakTriggered = false
+            }
+            .store(in: &cancellables)
+        timer.$standReminderPending.removeDuplicates().filter { !$0 }
+            .sink { [weak self] _ in self?.clearStandPresentation() }
+            .store(in: &cancellables)
+        NotificationCenter.default.publisher(for: .standTimeReached)
+            .sink { [weak self] event in
+                self?.handleStandTimeReached(includesEyeWarning: event.userInfo?["includesEyeWarning"] as? Bool == true)
+            }
+            .store(in: &cancellables)
+
         // 监听休息预警
         NotificationCenter.default.publisher(for: .preBreakWarning)
             .receive(on: DispatchQueue.main)
@@ -96,39 +120,51 @@ final class BreakCoordinator {
     }
     
     private func handleBreakTimeReached() {
-        // 检查勿扰时段
-        guard !DoNotDisturbManager.shared.isInDoNotDisturbPeriod else { return }
+        guard canStartBreakNow, TimerManager.shared.remainingWorkTime == 0 else { return }
         
-        // 检查是否应该暂停
-        guard !AppDetector.shared.shouldPauseReminder else { return }
-        
-        // 防止重复触发
-        guard !breakTriggered else { return }
+        // A stand deadline can fall during the gentle reminder’s 30-second grace period.
+        guard !breakTriggered else {
+            handleStandTimeReached()
+            return
+        }
+        let timer = TimerManager.shared
+        if timer.isStandDue && MediaDeviceMonitor.shared.meetingAtStandDeadline() { return }
         breakTriggered = true
+        if let cycle = waitingCombinedCycle, cycle == standCycle {
+            scheduleAutoBreak()
+            return
+        }
+        waitingCombinedCycle = nil
         
         // 检查新的一天，重置统计
         BreakStatisticsManager.shared.resetConsecutiveSkipsIfNewDay()
         
         let settings = SettingsManager.shared.settings
         
+        let includeStand = timer.isStandDue
+        if includeStand {
+            beginStandPresentation(combined: true)
+            combinedStandOverlay = true
+        }
+
         switch settings.reminderMode {
         case .forced:
             // 强制模式：直接显示遮罩
-            startBreak()
+            startBreak(withStanding: includeStand)
             
         case .gentle:
             // 温和模式：发送通知，30秒后自动开始休息
-            sendBreakNotification()
+            sendBreakNotification(includingStand: includeStand)
             scheduleAutoBreak()
             
         case .progressive:
             // 渐进模式：根据连续跳过次数决定
             if BreakStatisticsManager.shared.shouldForceBreak {
                 // 跳过次数达到阈值，强制休息
-                startBreak()
+                startBreak(withStanding: includeStand)
             } else {
                 // 还可以跳过，发送通知
-                sendBreakNotification()
+                sendBreakNotification(includingStand: includeStand)
                 scheduleAutoBreak()
             }
         }
@@ -139,10 +175,19 @@ final class BreakCoordinator {
         cancelAutoBreak()
         
         // 性能优化：设置 tolerance 允许系统合并唤醒
-        let timer = Timer(timeInterval: gentleModeWaitSeconds, repeats: false) { [weak self] _ in
+        let timer = Timer(timeInterval: gentleModeWaitSeconds, repeats: false) { [weak self] timer in
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                guard self.canStartBreakNow else {
+                guard self.autoBreakTimer === timer else { return }
+                self.autoBreakTimer = nil
+                guard TimerManager.shared.remainingWorkTime == 0 else {
+                    self.breakTriggered = false
+                    self.waitingCombinedCycle = nil
+                    self.combinedStandOverlay = false
+                    return
+                }
+                let meetingStarted = self.combinedStandOverlay && MediaDeviceMonitor.shared.meetingAtStandDeadline()
+                guard self.canStartBreakNow, !meetingStarted else {
                     self.breakTriggered = false
                     return
                 }
@@ -165,6 +210,7 @@ final class BreakCoordinator {
     
     private func handleBreakCompleted() {
         breakTriggered = false
+        combinedStandOverlay = false
         BreakWindowController.shared.hideOverlay()
         TimerManager.shared.completeBreak()
         recordBreakCompleted()
@@ -194,6 +240,25 @@ final class BreakCoordinator {
         }
     }
     
+    func resumeAfterSystemSuspension() {
+        if AppDetector.shared.shouldPauseReminder || (SettingsManager.shared.settings.standReminderEnabled
+            && MediaDeviceMonitor.shared.meetingAtStandDeadline()) {
+            didPauseForReminder = true
+            return
+        }
+        TimerManager.shared.resume()
+        restoreBreakPresentation()
+    }
+
+    private func restoreBreakPresentation() {
+        let timer = TimerManager.shared
+        if timer.state == .breaking {
+            BreakWindowController.shared.showOverlay()
+        } else if timer.remainingWorkTime == 0 {
+            handleBreakTimeReached()
+        }
+    }
+
     private func handleShouldResume() {
         guard !SystemStateMonitor.shared.isSuspended else { return }
         guard !AppDetector.shared.shouldPauseReminder else { return }
@@ -204,11 +269,7 @@ final class BreakCoordinator {
             TimerManager.shared.resume()
             didPauseForReminder = false
 
-            if TimerManager.shared.state == .breaking {
-                BreakWindowController.shared.showOverlay()
-            } else if TimerManager.shared.state == .preBreak || TimerManager.shared.remainingWorkTime == 0 {
-                NotificationCenter.default.post(name: .breakTimeReached, object: nil)
-            }
+            restoreBreakPresentation()
         } else {
             didPauseForReminder = false
         }
@@ -217,17 +278,27 @@ final class BreakCoordinator {
     // MARK: - Break Actions
     
     func startBreak() {
+        startBreak(withStanding: false)
+    }
+
+    private func startBreak(withStanding: Bool) {
         cancelAutoBreak()
+        waitingCombinedCycle = nil
         didPauseForReminder = false
-        SoundManager.shared.playBreakStartSound()
+        combinedStandOverlay = withStanding || (combinedStandOverlay && TimerManager.shared.standReminderPending)
+        if !combinedStandOverlay || !SettingsManager.shared.settings.standVoiceEnabled {
+            SoundManager.shared.playBreakStartSound()
+        }
         TimerManager.shared.startBreak()
         BreakWindowController.shared.showOverlay()
     }
     
     func skipBreak() {
         cancelAutoBreak()
+        waitingCombinedCycle = nil
         didPauseForReminder = false
         breakTriggered = false
+        combinedStandOverlay = false
         TimerManager.shared.skipBreak()
         BreakWindowController.shared.hideOverlay()
         recordBreakSkipped()
@@ -235,8 +306,10 @@ final class BreakCoordinator {
     
     func delayBreak(minutes: Int) {
         cancelAutoBreak()
+        waitingCombinedCycle = nil
         didPauseForReminder = false
         breakTriggered = false
+        combinedStandOverlay = false
         TimerManager.shared.delayBreak(minutes: minutes)
         BreakWindowController.shared.hideOverlay()
     }
@@ -253,6 +326,84 @@ final class BreakCoordinator {
             && !SystemStateMonitor.shared.isSuspended
     }
     
+    // MARK: - Standing reminders
+
+    private func handleStandTimeReached(includesEyeWarning: Bool = false) {
+        let timer = TimerManager.shared
+        guard canStartBreakNow, timer.isStandDue, !MediaDeviceMonitor.shared.meetingAtStandDeadline() else { return }
+        beginStandPresentation(combined: false)
+        let content = UNMutableNotificationContent()
+        content.title = StandNotification.message
+        content.body = "距离上次起身，已累计工作 \(timer.elapsedStandWorkSeconds / 60) 分钟。"
+        if includesEyeWarning {
+            content.body += "护眼休息将在 \(timer.remainingWorkTime) 秒后开始。"
+            let settings = SettingsManager.shared.settings
+            if !settings.standVoiceEnabled && settings.enableSound { content.sound = .default }
+        }
+        content.categoryIdentifier = StandNotification.stand
+        if let standCycle { content.userInfo = [StandNotification.cycleKey: standCycle] }
+        submitStandNotification(content)
+    }
+
+    private func beginStandPresentation(combined: Bool) {
+        standCycle = UUID().uuidString
+        TimerManager.shared.markStandReminderPresented()
+        SoundManager.shared.speakStandReminder(combined ? StandNotification.combinedMessage : StandNotification.message)
+    }
+
+    func acceptsCombinedEyeAction(cycle: String?) -> Bool {
+        guard let cycle else { return false }
+        let timer = TimerManager.shared
+        return cycle == waitingCombinedCycle && cycle == standCycle && breakTriggered
+            && timer.remainingWorkTime == 0 && (timer.state == .working || timer.state == .preBreak)
+            && canStartBreakNow
+    }
+
+    private func submitStandNotification(_ content: UNNotificationContent) {
+        let request = UNNotificationRequest(identifier: "stand-reminder", content: content, trigger: nil)
+        let submittedCycle = content.userInfo[StandNotification.cycleKey] as? String
+        UNUserNotificationCenter.current().add(request) { [weak self, logger] error in
+            guard let error else { return }
+            logger.error("Standing notification submission failed: \(error.localizedDescription, privacy: .public)")
+            Task { @MainActor in
+                guard let self, let submittedCycle, self.waitingCombinedCycle == submittedCycle else { return }
+                self.waitingCombinedCycle = nil
+            }
+        }
+    }
+
+    private func clearStandPresentation() {
+        let shouldKeepEyeActions = combinedStandOverlay && autoBreakTimer != nil && breakTriggered
+            && TimerManager.shared.remainingWorkTime == 0 && canStartBreakNow
+        let hadStandPresentation = standCycle != nil
+        standCycle = nil
+        combinedStandOverlay = false
+        if hadStandPresentation { SoundManager.shared.stopStandVoice() }
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: ["stand-reminder"])
+        center.removeDeliveredNotifications(withIdentifiers: ["stand-reminder"])
+        if shouldKeepEyeActions {
+            waitingCombinedCycle = nil
+            sendBreakNotification(includingStand: false, silently: true)
+        }
+    }
+
+    func confirmStanding() {
+        guard SettingsManager.shared.settings.standReminderEnabled else { return }
+        TimerManager.shared.resetStandCycle()
+    }
+
+    func snoozeStanding() {
+        guard TimerManager.shared.standReminderPending else { return }
+        TimerManager.shared.snoozeStanding()
+    }
+
+    func handleStandAction(_ action: String, cycle: String?) {
+        guard let cycle, cycle == standCycle, TimerManager.shared.standReminderPending else { return }
+        if action == StandNotification.confirm { confirmStanding() }
+        if action == StandNotification.snooze { snoozeStanding() }
+    }
+
     // MARK: - Statistics Recording
     
     private func recordBreakCompleted() {
@@ -281,41 +432,23 @@ final class BreakCoordinator {
         UNUserNotificationCenter.current().add(request)
     }
     
-    private func sendBreakNotification() {
+    private func sendBreakNotification(includingStand: Bool, silently: Bool = false) {
         let content = UNMutableNotificationContent()
-        content.title = "休息时间到"
-        content.body = "是时候让眼睛休息一下了"
-        content.sound = .default
-        content.categoryIdentifier = "BREAK_REMINDER"
-        
-        // 添加操作按钮
-        let startAction = UNNotificationAction(
-            identifier: "START_BREAK",
-            title: "开始休息",
-            options: .foreground
-        )
-        
-        let skipAction = UNNotificationAction(
-            identifier: "SKIP_BREAK",
-            title: "跳过",
-            options: []
-        )
-        
-        let delayAction = UNNotificationAction(
-            identifier: "DELAY_5MIN",
-            title: "5分钟后提醒",
-            options: []
-        )
-        
-        let category = UNNotificationCategory(
-            identifier: "BREAK_REMINDER",
-            actions: [startAction, skipAction, delayAction],
-            intentIdentifiers: [],
-            options: []
-        )
-        
-        UNUserNotificationCenter.current().setNotificationCategories([category])
-        
+        content.title = includingStand ? StandNotification.combinedMessage : "休息时间到"
+        content.body = includingStand ? "起身活动两分钟，让眼睛也休息一下。" : "是时候让眼睛休息一下了"
+        content.categoryIdentifier = includingStand ? StandNotification.combined : StandNotification.eyes
+        if includingStand, let standCycle {
+            waitingCombinedCycle = standCycle
+            if !SettingsManager.shared.settings.standVoiceEnabled && SettingsManager.shared.settings.enableSound {
+                content.sound = .default
+            }
+            content.userInfo = [StandNotification.cycleKey: standCycle]
+            submitStandNotification(content)
+            return
+        } else if !silently {
+            content.sound = .default
+        }
+
         let request = UNNotificationRequest(
             identifier: "break-reminder",
             content: content,
